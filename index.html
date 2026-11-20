@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fenêtre météo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300&display=swap">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#02050a;color-scheme:dark}
+canvas{position:fixed;inset:0;width:100%;height:100%;pointer-events:none}
+#wrap{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:Outfit,"Helvetica Neue",Arial,sans-serif;text-align:center;user-select:none;color:#eaf3fb;text-shadow:0 0 36px rgba(20,40,80,.45)}
+#time{font-size:24vmin;font-weight:200;line-height:1;letter-spacing:.02em}
+#date{font-size:4vmin;font-weight:300;margin-top:1.4vmin;opacity:.78;text-transform:capitalize}
+#temp{font-size:12vmin;font-weight:200;margin-top:6vmin;line-height:1}
+#lbl{font-size:4vmin;font-weight:300;opacity:.8;margin-top:1.4vmin}
+#cap{font-size:2.6vmin;font-weight:300;opacity:.45;margin-top:2.6vmin}
+#hint{position:fixed;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);left:0;right:0;text-align:center;color:#9fb5c8;font:12px Arial,sans-serif;transition:opacity 2s}
+#cap,#hint{display:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="wrap"><div id="time">--:--</div><div id="date"></div><div id="temp"></div><div id="lbl"></div><div id="cap"></div></div>
+<canvas id="g"></canvas>
+<div id="hint">Touchez : plein écran · Double-touchez : aperçu des conditions (soleil, pluie, orage, neige…)</div>
+<script>
+const $=i=>document.getElementById(i),cv=$('c'),x=cv.getContext('2d'),gc=$('g'),g=gc.getContext('2d');
+const rnd=(a,b)=>a+Math.random()*(b-a),cl=(v,a,b)=>Math.max(a,Math.min(b,v)),mix=(a,b,k)=>a.map((v,i)=>v+(b[i]-v)*k),rgb=c=>'rgb('+c.map(Math.round).join(',')+')';
+let W,H,D,t=0,lat=47.27,lon=-0.48,city='',simH=null,demo=0,wind=.15,Tw=.15,fl=0,nextL=400,bolt=null;
+const Z={cloud:.3,rain:0,snow:0,fog:0,storm:0},S={...Z},T={...Z};
+const live={temp:null,label:'Chargement de la météo…',cap:''};
+let drops=[],splash=[],beads=[],flakes=[],stars=[],clouds=[],spr,mist=document.createElement('canvas'),m2=mist.getContext('2d');
+
+/* ---------- Soleil ---------- */
+function sun(d){const R=Math.PI/180,n=Math.floor((d-new Date(d.getFullYear(),0,0))/864e5),B=R*360/364*(n-81),
+ eot=9.87*Math.sin(2*B)-7.53*Math.cos(B)-1.5*Math.sin(B),dec=R*23.44*Math.sin(R*360/365*(284+n)),
+ st=d.getUTCHours()+d.getUTCMinutes()/60+lon/15+eot/60,ha=R*15*(st-12),la=R*lat;
+ return[Math.asin(Math.sin(la)*Math.sin(dec)+Math.cos(la)*Math.cos(dec)*Math.cos(ha))/R,ha]}
+const at=h=>{const e=new Date();e.setHours(Math.floor(h),Math.round(h%1*60),0);return sun(e)[0]};
+function hourFor(h){if(typeof h=='number')return h;let p=at(0);
+ for(let k=.05;k<24;k+=.05){const a=at(k);if(h=='r'&&p<0&&a>=0)return k+.3;if(h=='s'&&p>0&&a<=0)return k-.4;p=a}return 12}
+function now(){const d=new Date();if(simH!==null)d.setHours(Math.floor(simH),Math.round(simH%1*60),0);return d}
+const dayK=a=>a<=-12?0:a<=0?.35*(a+12)/12:a<=20?.35+.65*a/20:1;
+const NI=[[3,6,14],[10,20,42]],TW=[[40,52,104],[200,120,110]],DY=[[56,118,205],[160,208,245]];
+function pal(k){const f=k<.35?[NI,TW,k/.35]:[TW,DY,(k-.35)/.65];return[mix(f[0][0],f[1][0],f[2]),mix(f[0][1],f[1][1],f[2])]}
+
+/* ---------- Météo réelle (Open-Meteo, sans clé) ---------- */
+const LB={0:'Ciel dégagé',1:'Plutôt dégagé',2:'Éclaircies',3:'Couvert',45:'Brouillard',48:'Brouillard givrant',51:'Bruine légère',53:'Bruine',55:'Bruine dense',56:'Bruine verglaçante',57:'Bruine verglaçante',61:'Pluie faible',63:'Pluie',65:'Forte pluie',66:'Pluie verglaçante',67:'Pluie verglaçante',71:'Neige faible',73:'Neige',75:'Forte neige',77:'Grains de neige',80:'Averses',81:'Averses fortes',82:'Averses violentes',85:'Averses de neige',86:'Fortes averses de neige',95:'Orage',96:'Orage et grêle',99:'Violent orage'};
+const RN={51:.3,53:.4,55:.5,56:.35,57:.45,61:.45,63:.7,65:.95,66:.55,67:.8,80:.5,81:.75,82:1,95:.85,96:.95,99:1},SN={71:.4,73:.7,75:1,77:.3,85:.5,86:.9};
+function applyWx(c){const k=c.weather_code;
+ Object.assign(T,{cloud:cl(c.cloud_cover/100,0,1),rain:RN[k]||0,snow:SN[k]||0,fog:k==45||k==48?.85:0,storm:k>=95?1:0});
+ if(T.rain||T.snow)T.cloud=Math.max(T.cloud,.85);Tw=cl(c.wind_speed_10m/45,.05,1);
+ live.temp=c.temperature_2m;live.label=LB[k]||'';
+ live.cap=(city?city+' · ':'')+'météo réelle · '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}
+function getPos(){return new Promise(ok=>{
+ const ip=async()=>{try{const j=await(await fetch('https://ipwho.is/')).json();if(j.success!==false)return ok({lat:j.latitude,lon:j.longitude,city:j.city})}catch(e){}ok(null)};
+ if(!navigator.geolocation)return ip();
+ navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lon:p.coords.longitude,gps:1}),ip,{timeout:6000,maximumAge:36e5})})}
+async function load(){
+ try{const p=await getPos();if(p){lat=p.lat;lon=p.lon;city=p.city||city;
+   if(p.gps&&!city)try{const r=await(await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='+lat+'&longitude='+lon+'&localityLanguage=fr')).json();city=r.city||r.locality||''}catch(e){}}
+  const j=await(await fetch('https://api.open-meteo.com/v1/forecast?latitude='+lat+'&longitude='+lon+'&current=temperature_2m,weather_code,cloud_cover,wind_speed_10m&timezone=auto')).json();
+  applyWx(j.current);try{localStorage.setItem('wx',JSON.stringify({c:j.current,city,lat,lon}))}catch(e){}
+ }catch(e){try{const s=JSON.parse(localStorage.getItem('wx'));lat=s.lat;lon=s.lon;city=s.city;applyWx(s.c);live.cap=(city?city+' · ':'')+'hors ligne, dernière météo connue'}catch(_){live.label='Météo indisponible';live.cap='Connectez-vous pour la météo réelle'}}
+}
+
+/* ---------- Scénarios d'aperçu (double-touche) ---------- */
+const SC=[null,{n:'Soleil',T:{cloud:.04},h:13},{n:'Lever du soleil',T:{cloud:.3},h:'r'},{n:'Coucher du soleil',T:{cloud:.35},h:'s'},{n:'Nuageux',T:{cloud:.95},h:14},{n:'Pluie',T:{cloud:1,rain:.75},h:15},{n:'Orage',T:{cloud:1,rain:1,storm:1},h:22.5},{n:'Neige',T:{cloud:.9,snow:.8},h:11},{n:'Brouillard',T:{cloud:.7,fog:.85},h:9},{n:'Nuit étoilée',T:{cloud:.05},h:1}];
+function setDemo(){const s=SC[demo];if(!s){simH=null;load();return}simH=hourFor(s.h);Object.assign(T,Z,s.T);Tw=s.T.storm?.8:.25;live.temp=null;live.label='Aperçu : '+s.n;live.cap='mode démo · double-touchez pour continuer'}
+
+/* ---------- Initialisation ---------- */
+function mkSpr(a,K){ // couleur des nuages selon lumière, orage, crépuscule
+ const dk=cl(S.rain*.8+S.snow*.3+S.storm*.5+S.cloud*.2,0,1),gl=Math.exp(-Math.pow(a/7,2)),L=.13+.87*K;
+ let c=mix([252,253,255],[84,92,108],dk).map(v=>v*L);c[0]+=gl*55*(1-dk*.6);c[1]+=gl*18;c[2]+=(1-K)*14;
+ spr=document.createElement('canvas');spr.width=spr.height=128;const q=spr.getContext('2d'),r=q.createRadialGradient(64,64,0,64,64,64),s=rgb(c).slice(4,-1);
+ r.addColorStop(0,'rgba('+s+',.5)');r.addColorStop(.45,'rgba('+s+',.24)');r.addColorStop(1,'rgba('+s+',0)');q.fillStyle=r;q.fillRect(0,0,128,128)}
+const dsp=document.createElement('canvas');dsp.width=4;dsp.height=64;
+{const q=dsp.getContext('2d'),k=q.createLinearGradient(0,0,0,64);k.addColorStop(0,'rgba(190,220,255,0)');k.addColorStop(.85,'rgba(190,220,255,.9)');k.addColorStop(1,'rgba(235,245,255,1)');q.fillStyle=k;q.fillRect(1,0,2,64)}
+const mkDrop=i=>{const z=Math.random();return{x:rnd(-W*.1,W*1.1),y:i?rnd(0,H):rnd(-H*.2,0),z,l:(16+z*40)*D,v:(10+z*24)*D*(H/2000+.5),a:.1+z*.45,w:(.7+z*1.5)*D}};
+const mkBead=i=>({x:rnd(0,W),y:i?rnd(0,H):rnd(-50,H*.3),r:rnd(2,5)*D,slide:0,vy:0,trail:[],lim:rnd(6,10)*D});
+function resize(){
+ D=Math.min(devicePixelRatio||1,3);W=cv.width=gc.width=mist.width=innerWidth*D;H=cv.height=gc.height=mist.height=innerHeight*D;
+ drops=Array.from({length:Math.round(W*H/8000)},()=>mkDrop(1));beads=Array.from({length:Math.round(W*H/60000)},()=>mkBead(1));
+ flakes=Array.from({length:Math.round(W*H/9000)},()=>({x:rnd(0,W),y:rnd(0,H),z:Math.random(),p:rnd(0,7)}));
+ stars=Array.from({length:150},()=>({x:rnd(0,1),y:rnd(0,.6),r:rnd(.5,1.6),p:rnd(0,7)}));
+ clouds=Array.from({length:16},()=>({x:rnd(-.3,1.3),y:rnd(.03,.5),s:rnd(.6,1.5),v:rnd(.4,1),p:Array.from({length:6},()=>({dx:rnd(-.9,.9),dy:rnd(-.25,.25),r:rnd(.5,1)}))}));
+ m2.clearRect(0,0,W,H);
+ for(let i=0;i<W*H/5000;i++){const a=rnd(0,W),b=rnd(0,H),q=rnd(.5,1.6)*D;m2.beginPath();m2.arc(a,b,q,0,7);m2.fillStyle='rgba(190,215,240,'+rnd(.05,.14)+')';m2.fill();
+  m2.beginPath();m2.arc(a-q*.3,b-q*.3,q*.3,0,7);m2.fillStyle='rgba(255,255,255,.35)';m2.fill()}
+}
+
+/* ---------- Rendu ---------- */
+function frame(){
+ t++;const d=now(),[a,ha]=sun(d),K=dayK(a);
+ for(const k in Z)S[k]+=(T[k]-S[k])*.012;wind+=(Tw-wind)*.012;
+ if(t%20==1)mkSpr(a,K);
+ /* ciel */
+ const[top,bot]=pal(K),gy=cl(S.cloud*.55+S.rain*.4+S.snow*.3+S.fog*.5,0,.9),gl=Math.exp(-Math.pow(a/7,2)),L=(.15+.85*K)*(1-S.storm*.35);
+ let tp=mix(top,[112*L,122*L,138*L],gy),bt=mix(bot,[165*L,172*L,182*L],gy);
+ bt=mix(bt,[255,140,85],gl*.75*(1-gy*.75));tp=mix(tp,[95,75,135],gl*.35*(1-gy*.7));
+ const gr=x.createLinearGradient(0,0,0,H);gr.addColorStop(0,rgb(tp));gr.addColorStop(1,rgb(bt));x.setTransform(1,0,0,1,0,0);x.globalAlpha=1;x.fillStyle=gr;x.fillRect(0,0,W,H);
+ /* étoiles */
+ const sa=cl(1-K/.4,0,1)*(1-S.cloud*.9)*(1-S.fog)*(1-S.rain);
+ if(sa>.02)for(const s of stars){x.globalAlpha=sa*(.45+.55*Math.sin(t*.03+s.p));x.fillStyle='#fff';x.fillRect(s.x*W,s.y*H,s.r*D,s.r*D)}
+ /* soleil / lune */
+ const vis=1-cl(S.cloud*.9+S.fog*.5,0,1);
+ if(a>-8&&vis>.02){const sx=W*(.5+Math.sin(ha)*.42),sy=H*(.62-a/90*.5),w=cl(a/30,0,1),c=mix([255,150,80],[255,246,222],w).map(Math.round).join(','),R=W*(.55-.2*w);
+  const q=x.createRadialGradient(sx,sy,0,sx,sy,R);q.addColorStop(0,'rgba('+c+','+.55*vis+')');q.addColorStop(.2,'rgba('+c+','+.2*vis+')');q.addColorStop(1,'rgba('+c+',0)');
+  x.globalAlpha=1;x.fillStyle=q;x.fillRect(0,0,W,H);x.beginPath();x.arc(sx,sy,W*.035,0,7);x.fillStyle='rgba('+c+','+vis*.95+')';x.fill()}
+ else if(a<0&&vis>.02){const mx=W*(.5-Math.sin(ha)*.4),my=H*(.62+Math.max(a,-70)/90*.5),q=x.createRadialGradient(mx,my,0,mx,my,W*.22);
+  q.addColorStop(0,'rgba(200,220,255,'+.3*vis+')');q.addColorStop(1,'rgba(200,220,255,0)');x.globalAlpha=1;x.fillStyle=q;x.fillRect(0,0,W,H);
+  x.beginPath();x.arc(mx,my,W*.028,0,7);x.fillStyle='rgba(240,246,255,'+.95*vis+')';x.fill()}
+ /* nuages */
+ clouds.forEach((c,i)=>{const al=cl(S.cloud*18-i,0,1)*(.5+.4*S.cloud);if(al<.01)return;
+  c.x+=(.00012+wind*.0009)*c.v;if(c.x>1.35)c.x=-.35;x.globalAlpha=al;
+  const lo=S.rain+S.snow>.3?.18:0,cx=c.x*W,cy=(c.y+lo)*H,u=W*.13*c.s;
+  for(const p of c.p){const r=u*p.r;x.drawImage(spr,cx+p.dx*u-r,cy+p.dy*u-r*.7,r*2,r*1.4)}});
+ /* brouillard */
+ if(S.fog>.02){x.globalAlpha=S.fog*.4;x.fillStyle=rgb(mix(bt,[190,196,204],.5));x.fillRect(0,0,W,H);
+  for(let i=0;i<6;i++){const fx=((t*.12*(1+i*.1)+i*W*.3)%(W*1.6))-W*.3;x.globalAlpha=S.fog*.35;x.drawImage(spr,fx-W*.5,H*(.5+i*.08)-W*.2,W,W*.4)}}
+ /* éclair */
+ if(S.storm>.5&&t>nextL){fl=1;nextL=t+rnd(260,900);let bx=rnd(W*.15,W*.85),by=0;bolt=[[bx,by]];while(by<H*.55){by+=rnd(H*.02,H*.05);bx+=rnd(-W*.06,W*.06);bolt.push([bx,by])};setTimeout(()=>{fl=Math.max(fl,.8)},130)}
+ if(fl>.02){x.globalAlpha=fl*.45;x.fillStyle='#d6e4ff';x.fillRect(0,0,W,H);
+  if(bolt&&fl>.35){x.globalAlpha=fl;x.strokeStyle='#f4f8ff';x.lineWidth=2.5*D;x.lineJoin='round';x.shadowColor='#9db8ff';x.shadowBlur=30*D;x.beginPath();bolt.forEach((p,i)=>i?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1]));x.stroke();x.shadowBlur=0}
+  fl*=.9}
+ /* pluie */
+ if(S.rain>.02){const mul=.5+.5*K,w=.06+wind*.5,n=Math.floor(drops.length*S.rain);
+  for(let i=0;i<drops.length;i++){const p=drops[i];
+   if(i<n){const k=p.l/64;x.globalAlpha=p.a*mul;x.setTransform(p.w/2,0,-w*k,k,p.x,p.y);x.drawImage(dsp,0,0)}
+   p.y+=p.v;p.x-=p.v*w;
+   if(p.y>H){if(p.z>.55&&splash.length<70&&i<n)splash.push({x:p.x,y:H-rnd(0,H*.01),life:1,s:rnd(.6,1.2)*D});Object.assign(p,mkDrop(0))}}
+  x.setTransform(1,0,0,1,0,0);
+  for(let i=splash.length-1;i>=0;i--){const s=splash[i];s.life-=.08;if(s.life<=0){splash.splice(i,1);continue}const k=1-s.life;
+   x.globalAlpha=s.life*.5*mul;x.strokeStyle='#c8e1fa';x.lineWidth=D;x.beginPath();x.ellipse(s.x,s.y,14*k*s.s*D,4*k*s.s*D,0,0,7);x.stroke()}}
+ /* neige */
+ if(S.snow>.02){const n=Math.floor(flakes.length*S.snow);x.fillStyle='#fff';
+  for(let i=0;i<n;i++){const f=flakes[i];f.y+=(.8+f.z*2.2)*D;f.x+=(Math.sin(t*.02+f.p)*.6-wind*1.5)*D;
+   if(f.y>H){f.y=-10;f.x=rnd(0,W)}if(f.x<-10)f.x=W+10;if(f.x>W+10)f.x=-10;
+   x.globalAlpha=(.35+f.z*.55)*(.5+.5*K);x.beginPath();x.arc(f.x,f.y,(1+f.z*2.8)*D,0,7);x.fill()}}
+ x.globalAlpha=1;
+ glass(K,Math.max(S.rain,S.snow*.3,S.fog*.35));
+ $('wrap').style.opacity=(.62+.38*K).toFixed(2);
+}
+function glass(K,wet){
+ g.clearRect(0,0,W,H);if(wet<.03)return;
+ g.globalAlpha=wet*(.5+.5*K);g.drawImage(mist,0,0);g.globalAlpha=Math.min(1,wet*1.4);
+ for(const b of beads){
+  if(!b.slide){if(Math.random()<.004*wet)b.r+=rnd(.3,1)*D;if(b.r>b.lim)b.slide=1}
+  else{b.vy=Math.min(b.vy+.06*D,rnd(1.4,3.2)*D);b.y+=b.vy;b.x+=rnd(-.35,.35)*D;b.trail.push({x:b.x,y:b.y});if(b.trail.length>80)b.trail.shift();b.r-=.006*D;
+   if(Math.random()<.015)b.vy*=.15;if(b.r<2*D||b.y>H+20){Object.assign(b,mkBead(0));continue}}
+  if(b.trail.length>1){g.beginPath();g.moveTo(b.trail[0].x,b.trail[0].y);for(const q of b.trail)g.lineTo(q.x,q.y);g.strokeStyle='rgba(190,215,240,.09)';g.lineWidth=b.r*.55;g.lineCap='round';g.stroke()}
+  const q=g.createLinearGradient(0,b.y-b.r,0,b.y+b.r*1.1);q.addColorStop(0,'rgba(0,10,25,.32)');q.addColorStop(1,'rgba(200,225,250,.30)');
+  g.beginPath();g.ellipse(b.x,b.y,b.r*.85,b.r*1.1,0,0,7);g.fillStyle=q;g.fill();g.strokeStyle='rgba(225,238,255,.22)';g.lineWidth=D*.8;g.stroke();
+  g.beginPath();g.arc(b.x-b.r*.3,b.y-b.r*.45,b.r*.2,0,7);g.fillStyle='rgba(255,255,255,.6)';g.fill()}
+ g.globalAlpha=1}
+
+/* ---------- Texte ---------- */
+function tick(){const d=now();
+ $('time').textContent=d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+ $('date').textContent=d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+ $('temp').textContent=live.temp!==null?Math.round(live.temp)+'°':'';$('lbl').textContent=live.label;$('cap').textContent=live.cap;
+ const m=Date.now()/60000;$('wrap').style.transform='translate('+(Math.sin(m)*10).toFixed(1)+'px,'+(Math.cos(m*.7)*10).toFixed(1)+'px)'}
+async function awake(){try{if('wakeLock'in navigator)await navigator.wakeLock.request('screen')}catch(e){}}
+document.addEventListener('click',()=>{try{document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()}catch(e){}awake();$('hint').style.opacity=0});
+document.addEventListener('dblclick',()=>{demo=(demo+1)%SC.length;setDemo();tick()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){awake();load()}});
+addEventListener('resize',resize);
+resize();load();setInterval(load,6e5);tick();setInterval(tick,1000);awake();
+(function loop(){frame();requestAnimationFrame(loop)})();
+</script>
+</body>
+</html>
